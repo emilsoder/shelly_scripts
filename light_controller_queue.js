@@ -5,15 +5,9 @@
 // This script is useful when the device is receiving multiple button events in quick succession.
 // The queue ensures that each event is processed in order and that no events are missed.
 
-// CHANGE PARAMS BELOW
 
 // --- Button Configurations ---
 const BLEEventComponentName = "script:1";
-
-configureButton("btn_up_left", "LeftDevice", 0, "http", "192.168.0.12");
-configureButton("btn_down_left", "LeftDevice", 0, "http", "192.168.0.12");
-configureButton("btn_up_right", "RightDevice", 0, "http", "192.168.0.178");
-configureButton("btn_down_right", "RightDevice", 0, "http", "192.168.0.178");
 
 // --- Configuration Section ---
 
@@ -248,3 +242,10 @@ Shelly.addEventHandler(function (event) {
     processQueue();
   }
 });
+
+// CHANGE PARAMS BELOW
+
+configureButton("btn_up_left", "LeftDevice", 0, "http", "192.168.0.12");
+configureButton("btn_down_left", "LeftDevice", 0, "http", "192.168.0.12");
+configureButton("btn_up_right", "RightDevice", 0, "http", "192.168.0.178");
+configureButton("btn_down_right", "RightDevice", 0, "http", "192.168.0.178");
