@@ -2,10 +2,71 @@
 // This script is an extension of the Light Controller script that uses a queue to process button events.
 // It handles multiple button presses in quick succession by processing each event in order.
 // When deviceCommunicationType is "local", the local API is used via Shelly.call("Light.Set", ...)
-// Otherwise, the remote API is used via HTTP calls.
+// Otherwise, the HTTP‑based API is used.
 
 // --- Button Configurations ---
 const BLEEventComponentName = "script:1";
+
+// --- Configurable Button Array ---
+// Update this array to change which buttons are configured and how.
+const BUTTON_CONFIGS = [
+//   {
+//     button: "btn_up_left",
+//     deviceId: "LeftDevice",
+//     channelId: 0,
+//     deviceCommunicationType: "local",
+//     deviceIpAddress: "",
+//   },
+//   {
+//     button: "btn_down_left",
+//     deviceId: "LeftDevice",
+//     channelId: 0,
+//     deviceCommunicationType: "local",
+//     deviceIpAddress: "",
+//   },
+//   {
+//     button: "btn_up_right",
+//     deviceId: "RightDevice",
+//     channelId: 1,
+//     deviceCommunicationType: "local",
+//     deviceIpAddress: "",
+//   },
+//   {
+//     button: "btn_down_right",
+//     deviceId: "RightDevice",
+//     channelId: 1,
+//     deviceCommunicationType: "local",
+//     deviceIpAddress: "",
+//   },
+  {
+    button: "btn_up_left",
+    deviceId: "LeftDevice",
+    channelId: 0,
+    deviceCommunicationType: "http",
+    deviceIpAddress: "192.168.0.12",
+  },
+  {
+    button: "btn_down_left",
+    deviceId: "LeftDevice",
+    channelId: 0,
+    deviceCommunicationType: "http",
+    deviceIpAddress: "192.168.0.12",
+  },
+  {
+    button: "btn_up_right",
+    deviceId: "RightDevice",
+    channelId: 0,
+    deviceCommunicationType: "http",
+    deviceIpAddress: "192.168.0.178",
+  },
+  {
+    button: "btn_down_right",
+    deviceId: "RightDevice",
+    channelId: 0,
+    deviceCommunicationType: "http",
+    deviceIpAddress: "192.168.0.178",
+  },
+];
 
 // --- Configuration Section ---
 
@@ -78,7 +139,7 @@ function sendLightCommand(config, params) {
     if (typeof params.brightness !== "undefined") {
       args.brightness = params.brightness;
     }
-    // Convert the on/off param to a boolean if needed.
+    // Convert the on/off param to a boolean.
     args.on = params.on === "true" || params.on === true;
     Shelly.call("Light.Set", args, null);
     print("Called local Light.Set with args: " + JSON.stringify(args));
@@ -283,10 +344,15 @@ Shelly.addEventHandler(function (event) {
   }
 });
 
-// --- Button Configurations ---
-// For devices using the local API, set the communication type to "local" and leave the IP empty.
-
-configureButton("btn_up_left", "LeftDevice", 0, "http", "192.168.0.12");
-configureButton("btn_down_left", "LeftDevice", 0, "http", "192.168.0.12");
-configureButton("btn_up_right", "RightDevice", 0, "http", "192.168.0.178");
-configureButton("btn_down_right", "RightDevice", 0, "http", "192.168.0.178");
+// --- Initialize Button Configurations ---
+// Iterate through the configurable array and register each button.
+for (var i = 0; i < BUTTON_CONFIGS.length; i++) {
+  var cfg = BUTTON_CONFIGS[i];
+  configureButton(
+    cfg.button,
+    cfg.deviceId,
+    cfg.channelId,
+    cfg.deviceCommunicationType,
+    cfg.deviceIpAddress
+  );
+}
