@@ -1,10 +1,8 @@
 // --- Light Controller with Queue ---
 // This script is an extension of the Light Controller script that uses a queue to process button events.
-// This allows the script to handle multiple button presses in quick succession without missing any events.
-// The queue is processed one event at a time, and the next event is scheduled after the current event is processed.
-// This script is useful when the device is receiving multiple button events in quick succession.
-// The queue ensures that each event is processed in order and that no events are missed.
-
+// It handles multiple button presses in quick succession by processing each event in order.
+// When deviceCommunicationType is "local", the local API is used via Shelly.call("Light.Set", ...)
+// Otherwise, the remote API is used via HTTP calls.
 
 // --- Button Configurations ---
 const BLEEventComponentName = "script:1";
@@ -74,14 +72,27 @@ function nextLower(current, steps) {
 
 // --- Helper for Sending Commands ---
 function sendLightCommand(config, params) {
-  var url =
-    "http://" + config.deviceIpAddress + "/rpc/Light.Set?on=" + params.on;
-  if (typeof params.brightness !== "undefined") {
-    url += "&brightness=" + params.brightness;
+  if (config.deviceCommunicationType === "local") {
+    // Use local API
+    var args = { id: config.channelId };
+    if (typeof params.brightness !== "undefined") {
+      args.brightness = params.brightness;
+    }
+    // Convert the on/off param to a boolean if needed.
+    args.on = params.on === "true" || params.on === true;
+    Shelly.call("Light.Set", args, null);
+    print("Called local Light.Set with args: " + JSON.stringify(args));
+  } else {
+    // Use HTTP API
+    var url =
+      "http://" + config.deviceIpAddress + "/rpc/Light.Set?on=" + params.on;
+    if (typeof params.brightness !== "undefined") {
+      url += "&brightness=" + params.brightness;
+    }
+    url += "&id=" + config.channelId;
+    Shelly.call("HTTP.GET", { url: url }, null);
+    print("Called: " + url);
   }
-  url += "&id=" + config.channelId;
-  Shelly.call("HTTP.GET", { url: url }, null);
-  print("Called: " + url);
 }
 
 function deviceSetBrightness(config, value) {
@@ -98,34 +109,63 @@ function deviceTurnOff(config) {
 
 // --- Device Status and Brightness Handling ---
 function deviceGetLightStatus(config, action, buttonType, onComplete) {
-  var url =
-    "http://" +
-    config.deviceIpAddress +
-    "/rpc/Light.GetStatus?id=" +
-    config.channelId;
-  Shelly.call("HTTP.GET", { url: url }, function (response, error) {
-    if (error) {
-      print("HTTP Error getting status: " + error);
+  if (config.deviceCommunicationType === "local") {
+    // Use local API call to get status
+    var args = { id: config.channelId };
+    Shelly.call("Light.GetStatus", args, function (response, error) {
+      if (error) {
+        print("Local Light.GetStatus Error: " + error);
+        if (typeof onComplete === "function") {
+          onComplete();
+        }
+        return;
+      }
+      print("Called local Light.GetStatus with args: " + JSON.stringify(args));
+      var res = safeJsonParse(response.body);
+      var currentBrightness = res && res.brightness ? res.brightness : 0;
+      var isOn = res && res.output;
+      handleBrightnessAdjustment(
+        config,
+        currentBrightness,
+        isOn,
+        action,
+        buttonType
+      );
       if (typeof onComplete === "function") {
         onComplete();
       }
-      return;
-    }
-    print("Called: " + url);
-    var res = safeJsonParse(response.body);
-    var currentBrightness = res && res.brightness ? res.brightness : 0;
-    var isOn = res && res.output;
-    handleBrightnessAdjustment(
-      config,
-      currentBrightness,
-      isOn,
-      action,
-      buttonType
-    );
-    if (typeof onComplete === "function") {
-      onComplete();
-    }
-  });
+    });
+  } else {
+    // Use HTTP API
+    var url =
+      "http://" +
+      config.deviceIpAddress +
+      "/rpc/Light.GetStatus?id=" +
+      config.channelId;
+    Shelly.call("HTTP.GET", { url: url }, function (response, error) {
+      if (error) {
+        print("HTTP Error getting status: " + error);
+        if (typeof onComplete === "function") {
+          onComplete();
+        }
+        return;
+      }
+      print("Called: " + url);
+      var res = safeJsonParse(response.body);
+      var currentBrightness = res && res.brightness ? res.brightness : 0;
+      var isOn = res && res.output;
+      handleBrightnessAdjustment(
+        config,
+        currentBrightness,
+        isOn,
+        action,
+        buttonType
+      );
+      if (typeof onComplete === "function") {
+        onComplete();
+      }
+    });
+  }
 }
 
 function handleBrightnessAdjustment(
@@ -243,7 +283,8 @@ Shelly.addEventHandler(function (event) {
   }
 });
 
-// CHANGE PARAMS BELOW
+// --- Button Configurations ---
+// For devices using the local API, set the communication type to "local" and leave the IP empty.
 
 configureButton("btn_up_left", "LeftDevice", 0, "http", "192.168.0.12");
 configureButton("btn_down_left", "LeftDevice", 0, "http", "192.168.0.12");
