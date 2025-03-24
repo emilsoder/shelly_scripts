@@ -2,7 +2,7 @@
 // This script is an extension of the Light Controller script that uses a queue to process button events.
 // It handles multiple button presses in quick succession by processing each event in order.
 // Uses the local API via Shelly.call("Light.Set", ...)
-// Only processes button events from BLE devices.
+// Only processes button events from configured BLE devices.
 
 // --- Button Configurations ---
 const BLEEventComponentName = "script:1";
@@ -33,29 +33,28 @@ const BUTTON_CONFIGS = [
 ];
 
 // --- Configuration Section ---
-
-var brightnessStepsMapping = {
+const brightnessStepsMapping = {
   1: [0, 3, 5, 10, 25, 50, 75, 100],
   2: [0, 3, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
-  3: [
-    0, 3, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90,
-    95, 100,
-  ],
+  3: [0, 3, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100],
 };
 const defaultMinimumBrightness = 3;
-let buttonConfigurations = {};
+const MAX_QUEUE_SIZE = 100; // Prevent queue from growing too large
+const PROCESSING_DELAY_MS = 50; // Delay between processing queue items
 
-// --- Queue Variables ---
+// --- State Management ---
+let buttonConfigurations = {};
 let eventQueue = [];
 let queueHead = 0;
 let isProcessing = false;
+let lastProcessedTime = 0;
 
 // --- Button Configuration ---
-function configureButton(
-  button,
-  deviceId,
-  channelId
-) {
+function configureButton(button, deviceId, channelId) {
+  if (!button || !deviceId || typeof channelId !== 'number') {
+    print("Error: Invalid button configuration");
+    return;
+  }
   buttonConfigurations[button] = {
     deviceId: deviceId,
     channelId: channelId,
@@ -74,7 +73,7 @@ function safeJsonParse(input) {
 }
 
 function nextHigher(current, steps) {
-  for (var i = 0; i < steps.length; i++) {
+  for (let i = 0; i < steps.length; i++) {
     if (steps[i] > current) {
       return steps[i];
     }
@@ -83,7 +82,7 @@ function nextHigher(current, steps) {
 }
 
 function nextLower(current, steps) {
-  for (var i = steps.length - 1; i >= 0; i--) {
+  for (let i = steps.length - 1; i >= 0; i--) {
     if (steps[i] < current) {
       return steps[i];
     }
@@ -93,14 +92,24 @@ function nextLower(current, steps) {
 
 // --- Helper for Sending Commands ---
 function sendLightCommand(config, params) {
-  var args = { id: config.channelId };
+  if (!config || typeof config.channelId !== 'number') {
+    print("Error: Invalid config for light command");
+    return;
+  }
+
+  const args = { id: config.channelId };
   if (typeof params.brightness !== "undefined") {
     args.brightness = params.brightness;
   }
-  // Convert the on/off param to a boolean.
   args.on = params.on === "true" || params.on === true;
-  Shelly.call("Light.Set", args, null);
-  print("Called local Light.Set with args: " + JSON.stringify(args));
+  
+  Shelly.call("Light.Set", args, function(response, error) {
+    if (error) {
+      print("Error sending light command: " + error);
+    } else {
+      print("Successfully sent light command with args: " + JSON.stringify(args));
+    }
+  });
 }
 
 function deviceSetBrightness(config, value) {
@@ -117,29 +126,39 @@ function deviceTurnOff(config) {
 
 // --- Device Status and Brightness Handling ---
 function deviceGetLightStatus(config, action, buttonType, onComplete) {
-  var args = { id: config.channelId };
-  Shelly.call("Light.GetStatus", args, function (response, error) {
+  if (!config || typeof config.channelId !== 'number') {
+    print("Error: Invalid config for getting light status");
+    if (typeof onComplete === "function") onComplete();
+    return;
+  }
+
+  const args = { id: config.channelId };
+  print("Getting light status for channel: " + config.channelId);
+  
+  Shelly.call("Light.GetStatus", args, function(response, error) {
     if (error) {
-      print("Local Light.GetStatus Error: " + error);
-      if (typeof onComplete === "function") {
-        onComplete();
-      }
+      print("Error getting light status: " + error);
+      if (typeof onComplete === "function") onComplete();
       return;
     }
-    print("Called local Light.GetStatus with args: " + JSON.stringify(args));
-    var res = safeJsonParse(response.body);
-    var currentBrightness = res && res.brightness ? res.brightness : 0;
-    var isOn = res && res.output;
-    handleBrightnessAdjustment(
-      config,
-      currentBrightness,
-      isOn,
-      action,
-      buttonType
-    );
-    if (typeof onComplete === "function") {
-      onComplete();
+
+    print("Raw Light.GetStatus response: " + JSON.stringify(response));
+    
+    const res = safeJsonParse(response.body);
+    if (!res) {
+      print("Error: Invalid response from Light.GetStatus");
+      print("Response body: " + JSON.stringify(response.body));
+      if (typeof onComplete === "function") onComplete();
+      return;
     }
+
+    print("Parsed light status: " + JSON.stringify(res));
+    
+    const currentBrightness = res.brightness || 0;
+    const isOn = res.output || false;
+    
+    handleBrightnessAdjustment(config, currentBrightness, isOn, action, buttonType);
+    if (typeof onComplete === "function") onComplete();
   });
 }
 
@@ -183,93 +202,164 @@ function handleBrightnessAdjustment(
 
 // --- Button State Parsing ---
 // Define static maps outside of the function.
-var BUTTON_MAP = [
+const BUTTON_MAP = [
   "btn_up_left",
   "btn_down_left",
   "btn_up_right",
   "btn_down_right",
 ];
-var STATE_MAP = { 1: 1, 2: 2, 3: 3, 4: "long_press" };
+const STATE_MAP = { 1: 1, 2: 2, 3: 3, 4: "long_press" };
 
 function parseButtonState(data) {
-  if (!data.button || data.button.length !== 4) return null;
-  for (var i = 0; i < 4; i++) {
-    var state = data.button[i];
-    // Skip 0 and 254 values (which indicate no press or release)
-    if (state && state !== 254 && STATE_MAP[state]) {
-      return { button: BUTTON_MAP[i], action: STATE_MAP[state] };
+  print("Received button data: " + JSON.stringify(data));
+  
+  // Handle case where data is a string
+  if (typeof data === 'string') {
+    try {
+      data = JSON.parse(data);
+    } catch (e) {
+      print("Error parsing string data: " + e);
+      return null;
     }
   }
+  
+  // Handle case where data is already parsed
+  if (typeof data !== 'object' || data === null) {
+    print("Error: Data is not an object");
+    return null;
+  }
+
+  // Handle case where button data is directly in the data object
+  if (typeof data.button === 'number') {
+    // Single button press
+    const buttonIndex = data.button - 1; // Convert 1-based to 0-based index
+    if (buttonIndex >= 0 && buttonIndex < BUTTON_MAP.length) {
+      const result = { 
+        button: BUTTON_MAP[buttonIndex], 
+        action: 1 // Default to single press
+      };
+      print("Found single button press: " + JSON.stringify(result));
+      return result;
+    }
+    print("Error: Invalid button index: " + data.button);
+    return null;
+  }
+  
+  // Handle case where button data is an array
+  if (Array.isArray(data.button)) {
+    if (data.button.length !== 4) {
+      print("Error: Button array length is not 4, got: " + data.button.length);
+      return null;
+    }
+
+    for (let i = 0; i < 4; i++) {
+      const state = data.button[i];
+      print("Checking button " + i + " state: " + state);
+      
+      // Skip 0 and 254 values (which indicate no press or release)
+      if (state && state !== 254 && STATE_MAP[state]) {
+        const result = { button: BUTTON_MAP[i], action: STATE_MAP[state] };
+        print("Found valid button press: " + JSON.stringify(result));
+        return result;
+      }
+    }
+  }
+  
+  print("No valid button press found in data: " + JSON.stringify(data));
   return null;
 }
 
-// --- Helper to Schedule Next Queue Processing ---
+// --- Queue Processing ---
 function scheduleNext() {
-  // Use Timer.set(delay, repeat, callback)
-  Timer.set(0, false, function () {
+  const now = Date.now();
+  const timeSinceLastProcess = now - lastProcessedTime;
+  
+  // Ensure minimum delay between processing items
+  const delay = Math.max(0, PROCESSING_DELAY_MS - timeSinceLastProcess);
+  
+  Timer.set(delay, false, function() {
     processQueue();
   });
 }
 
-// --- Queue Processing ---
 function processQueue() {
   if (queueHead >= eventQueue.length) {
-    // Reset queue when done.
+    // Reset queue when done
     eventQueue = [];
     queueHead = 0;
     isProcessing = false;
     return;
   }
-  isProcessing = true;
 
-  var queuedItem = eventQueue[queueHead];
+  isProcessing = true;
+  lastProcessedTime = Date.now();
+
+  const queuedItem = eventQueue[queueHead];
   queueHead++;
 
-  var eventData = queuedItem.data;
-  var parsed = parseButtonState(eventData);
+  const eventData = queuedItem.data;
+  const parsed = parseButtonState(eventData);
+  
   if (!parsed) {
-    // No valid button press found; schedule next event.
+    print("Warning: No valid button press found in event data");
     scheduleNext();
     return;
   }
-  var config = buttonConfigurations[parsed.button];
+
+  const config = buttonConfigurations[parsed.button];
   if (!config) {
+    print("Warning: No configuration found for button: " + parsed.button);
     scheduleNext();
     return;
   }
-  var buttonType = parsed.button.indexOf("up") !== -1 ? "up" : "down";
-  deviceGetLightStatus(config, parsed.action, buttonType, function () {
-    scheduleNext();
-  });
+
+  const buttonType = parsed.button.indexOf("up") !== -1 ? "up" : "down";
+  deviceGetLightStatus(config, parsed.action, buttonType, scheduleNext);
 }
 
 // --- Event Handler ---
-Shelly.addEventHandler(function (event) {
-  // Only process events from our BLE event component
-  if (event.component !== BLEEventComponentName) return;
+Shelly.addEventHandler(function(event) {
+  print("Received event: " + JSON.stringify(event));
   
-  var eventData = safeJsonParse(event.info.data);
-  if (!eventData) return;
+  // Only process events from our BLE event component
+  if (event.component !== BLEEventComponentName) {
+    print("Ignoring event from component: " + event.component);
+    return;
+  }
+  
+  const eventData = safeJsonParse(event.info.data);
+  if (!eventData) {
+    print("Error: Failed to parse event data");
+    return;
+  }
+
+  print("Parsed event data: " + JSON.stringify(eventData));
 
   // Only process events that contain button data
-  if (!eventData.button) return;
+  if (!eventData.button) {
+    print("Ignoring event without button data");
+    return;
+  }
 
-  // Enqueue the event data.
+  // Prevent queue from growing too large
+  if (eventQueue.length >= MAX_QUEUE_SIZE) {
+    print("Warning: Queue full, dropping event");
+    return;
+  }
+
+  // Enqueue the event data
   eventQueue.push({ data: eventData });
+  print("Added event to queue. Queue length: " + eventQueue.length);
 
-  // Start processing if not already in progress.
+  // Start processing if not already in progress
   if (!isProcessing) {
     processQueue();
   }
 });
 
 // --- Initialize Button Configurations ---
-// Iterate through the configurable array and register each button.
-for (var i = 0; i < BUTTON_CONFIGS.length; i++) {
-  var cfg = BUTTON_CONFIGS[i];
-  configureButton(
-    cfg.button,
-    cfg.deviceId,
-    cfg.channelId
-  );
+for (const cfg of BUTTON_CONFIGS) {
+  configureButton(cfg.button, cfg.deviceId, cfg.channelId);
 }
+
+
